@@ -3,36 +3,23 @@ SELECT cityobject_id AS vol_id,
     realval AS volume
     FROM cityobject_genericattrib
     WHERE attrname = 'volume'
-), co2_gpc AS (
+), co2_prot AS (
     SELECT *
       FROM mapping.building_sector_gpc
     INNER JOIN public.cityobject_genericattrib
-      ON building_sector_gpc.id=cityobject_genericattrib.cityobject_id
+      ON building_sector_{0}.id=cityobject_genericattrib.cityobject_id
     INNER JOIN volume
       ON cityobject_id = vol_id
     WHERE attrname='i_co2'
-), summed_gpc AS(
-    SELECT sum(realval) AS co2,
+), summed AS(
+    SELECT sum(realval) AS co2_sum,
       sum(volume) AS vol_sum,
-      sector_name AS sector_gpc
-    FROM co2_gpc
-    GROUP BY sector_name
-), co2_ccr AS (
-    SELECT *
-      FROM mapping.building_sector_ccr
-    INNER JOIN public.cityobject_genericattrib
-      ON building_sector_ccr.id=cityobject_genericattrib.cityobject_id
-    INNER JOIN volume
-      ON cityobject_id = vol_id
-    WHERE attrname='i_co2'
-), summed_ccr AS(
-    SELECT sum(realval) AS co2_ccr,
-      sector_name AS sector_ccr
-    FROM co2_ccr
+      sector_name AS sector
+    FROM co2_prot
     GROUP BY sector_name
 )
 SELECT cityobject_id,
-    ((co2_gpc-co2_ccr)/vol_sum) * 1000,
+    ((i_co2/volume) - (co2_sum/vol_sum)) * 1000,
     street || ' ' ||house_number AS address,
     sector,
     building.description,

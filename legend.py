@@ -36,17 +36,17 @@ class the_legend():
         if discrete_bool:
             # create figure
             self.n = len(co2_data[:,0])
-            self.fig = plt.figure(figsiz = (4*self.n, 3),dpi = 80)
+            self.fig = plt.figure(figsize = (4*self.n, 3),dpi = 80)
             
             # assign the data, is array
             self.data = co2_data
+            
         # for continuous
         else:
             self.fig = plt.figure(figsize=(10, 1.8), dpi = 80)
             self.min_x = co2_data[0]
             self.max_x = co2_data[1]
-        
-        
+              
     ###
     # CLASS FUNCTIONS
     ###

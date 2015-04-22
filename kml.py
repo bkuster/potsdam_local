@@ -8,6 +8,7 @@ Takes care of the kml side of things
 ####
 # ENVIRONMENT
 ####
+import configparser
 import simplekml
 import colorsys
 import re
@@ -18,63 +19,16 @@ import numpy as np
 ####
 # FUNCTIONS
 ####
-# make_hex
-# makes kml hex
-def make_hex(x, min_x, max_x):
-    # make hsv h from  0..120 red .. green
-    if x < min_x:
-        h = 120
-    elif x > max_x:
-        h = 0
-    else:
-        h = (float(max_x-x) / (max_x-min_x)) * 120
+def get_config():
+    config = configparser.ConfigParser()
+    config.read('.config.ini')
     
-    # convert hsv color (h,1,1) to its rgb equivalent
-    r, g, b = colorsys.hsv_to_rgb(h/360, .6, 1.)
-    
-    # make hex
-    hexa = simplekml.Color.rgb(int(r*255), int(g*255), int(b*255))
-    hexa = re.sub('^.{2}','9f', hexa)
-    return(hexa)
-
-####
-# make_desc
-# makes a nice html description
-def make_descrip(co2_str, b_class, b_class_type, e_class, const, san):
-    description = """<![CDATA[
-        <table>
-            <tr>
-                <td><b> Klasse </b></td>
-                <td> %s <td>
-            </tr>
-            <tr>
-                <td> <b> Funktion </b></td>
-                <td> % s </td>
-            </tr>
-            <tr>
-                <td><b> Energieklasse </b></td>
-                <td> %s </td>
-            </tr>
-            <tr>
-                <td><b> Baujahr <b></td>
-                <td> %s </td>
-            </tr>
-            <tr>
-                <td><b> Sanierungsgrad </b></td>
-                <td> %s </td>
-            </tr>
-            <tr>
-                <td> <b> CO<sup>2</sup> [kg/a m<sup>3</sup>] <b></td>
-                <td> %s </td
-            </tr>
-        </table>
-        <hr>
-        <footer>
-            <p> <i>GFZ</i> </p>
-        </footer>
-        ]]>
-    """ % (b_class, b_class_type, e_class, const, san, co2_str)
-    return description.decode('utf-8')
+    dict_list = []
+    for section in config.sections():
+        sec = dict(config.items(section))
+        dict_list.append(sec)
+        
+    return dict_list
 
 ####
 # find_kml
@@ -117,94 +71,377 @@ def make_coords(wkt):
     return(coords)
 
 ####
-# make_building
-# adds the kml for a building
-def make_building(b_id, con, co2_min, co2_max, the_kml):
-    # make the statement
-    statement = get_sql('sql/get_building.sql')
-    statement = statement % b_id
-    
-    # get the info
-    cur = con.cursor()
-    cur.execute(statement)
-    the_set = cur.fetchone()
-    
-    # assign values
-    building_id = the_set[0]
-    co2 = the_set[1]
-    addr = the_set[2]
-    b_class = the_set[3]
-    b_class_type = the_set[4]
-    e_class = the_set[5]
-    const = the_set[6]
-    san = the_set[7]
-    
-    if addr != None:
-        addr = addr.decode('utf-8')
-    
-    # make color ramp
-    if float(co2) > 0.00001:
-        color = make_hex(float(co2), co2_min, co2_max)
-        co2_str = "%.4f" % co2
+# make_hex
+# makes kml hex
+def make_hex(x, max_x, min_x):
+    # make hsv h from  0..120 red .. green
+    if x < max_x[0]:
+        h = 120
+    elif x > min_x[1]:
+        h = 0
     else:
-        color = '9fD2D2D2'
-        co2_str = 'NA'
-    # create the multi geometry
-    multi = the_kml.newmultigeometry(name="%s" %(addr), 
-                                     description= make_descrip(co2_str, b_class, b_class_type, e_class, const, san))
+        h = (float(max_x-x) / (max_x-min_x)) * 120
     
-    statement = get_sql('sql/get_geoms.sql')
-    statement = statement % building_id
-    # get polygons
-    cur.execute(statement)
+    # convert hsv color (h,1,1) to its rgb equivalent
+    r, g, b = colorsys.hsv_to_rgb(h/360, .6, 1.)
+    
+    # make hex
+    hexa = simplekml.Color.rgb(int(r*255), int(g*255), int(b*255))
+    hexa = re.sub('^.{2}','9f', hexa)
+    return(hexa)  
+    
+# class definition of tiles
+class tile():
+    # get configs
+    configs = get_config()
+    for d in configs:
+        globals().update(d)
 
-    geoms = cur.fetchall()
+    db_con = psycopg2.connect("dbname=%s user=%s host=%s password=%s" % (db, user_name, host_name, passwd))
+    cur = db_con.cursor()
+    tile_stat = -1
     
-    # loop over geoms
-    for tupls in geoms:
-        # get coords
-        coords = make_coords(tupls[0])
-            
-        # append to multi
-        multi.newpolygon(outerboundaryis=coords, extrude=1, altitudemode='absolute')
+    def __init__(self, options, tile_id, data):
+        # assign passed arguments
+        self.tile_id = tile_id
+        self.options = options
+        self.data = data
+        self.id = tile_id
+        self.kml = simplekml.Kml()
+    
+    ####
+    # make_tile
+    # makes the kml for a tile
+    def make_tile(self):
+        # get all the buildings
+        statement = get_sql('sql/get_tile.sql')
+        statement = statement % self.tile_id
         
-        # make it stylish
-        multi.style.polystyle.color = color
-        multi.style.linestyle.color = color
-
+        self.cur.execute(statement)
+        self.buildings = self.cur.fetchall()
+        
+        if len(self.buildings) == 0: # no buildings!
+            self.tile_stat = 0
+        else:
+            # iterate over the buildings
+            if self.options['protocol']:
+                for b_id in self.buildings:
+                    self.make_building_prot(b_id)
+            elif self.options['difference']:
+                for b_id in self.buildings:
+                    self.make_building_diff(b_id)
+            else:
+                for b_id in self.buildings:
+                    self.make_building(b_id)
+                
+            self.db_con.close()
+            self.the_kml.save('../data/kml/%s_tile.kml' % self.id, format=False)
+            self.tile_stat = 1
+    
+    ####
+    # make_building
+    # adds the kml for a building
+    def make_building(self, b_id):
+        # make the statement
+        statement = get_sql('sql/get_building.sql')
+        statement = statement % b_id
+        
+        # get the info
+        cur = self.db_con.cursor()
+        cur.execute(statement)
+        the_set = cur.fetchone()
+        
+        # assign values
+        building_id = the_set[0]
+        co2 = the_set[1]
+        addr = the_set[2]
+        b_class = the_set[3]
+        b_class_type = the_set[4]
+        e_class = the_set[5]
+        const = the_set[6]
+        san = the_set[7]
+            
+        # make color ramp
+        if float(co2) > 0.00001:
+            color = make_hex(float(co2), self.data[0], self.data[1])
+            co2_str = "%.4f" % co2
+        else:
+            color = '9fD2D2D2'
+            co2_str = 'NA'
+            
+        # create the multi geometry
+        multi = self.the_kml.newmultigeometry(name="%s" %(addr), 
+                                         description= self.make_descrip(co2_str, b_class, b_class_type, e_class, const, san))
+        
+        statement = get_sql('sql/get_geoms.sql')
+        statement = statement % building_id
+        
+        # get polygons
+        cur.execute(statement)
+        geoms = cur.fetchall()
+        
+        # loop over geoms
+        for tupls in geoms:
+            # get coords
+            coords = make_coords(tupls[0])
+                
+            # append to multi
+            multi.newpolygon(outerboundaryis=coords, extrude=1, altitudemode='absolute')
+            
+            # make it stylish
+            multi.style.polystyle.color = color
+            multi.style.linestyle.color = color
+    
+    ####
+    # make_building
+    # adds the kml for a building
+    def make_building_prot(self, b_id):
+        # make the statement
+        statement = get_sql('sql/get_building_prot.sql')
+        statement = statement.format(self.options['protocol'], b_id)
+        
+        # get the info
+        cur = self.db_con.cursor()
+        cur.execute(statement)
+        the_set = cur.fetchone()
+        
+        # assign values
+        building_id = the_set[0]
+        co2 = the_set[1]
+        addr = the_set[2]
+        b_class = the_set[3]
+        b_class_type = the_set[4]
+        e_class = the_set[5]
+        const = the_set[6]
+        san = the_set[7]
+        
+        # get color
+        if co2 == None:
+            color = '9fD2D2D2'
+            co2 = 0.0
+        else:
+            color = self.data[self.data[:,0].astype('int')==int(co2),3][0]
+        
+        # create the multi geometry
+        multi = self.the_kml.newmultigeometry(name="%s" %(addr), 
+                                         description = self.make_descrip_prot(co2, b_class, const, san))
+        
+        statement = get_sql('sql/get_geoms.sql')
+        statement = statement % building_id
+        
+        # get polygons
+        cur.execute(statement)
+        geoms = cur.fetchall()
+        
+        # loop over geoms
+        for tupls in geoms:
+            # get coords
+            coords = make_coords(tupls[0])
+                
+            # append to multi
+            multi.newpolygon(outerboundaryis=coords, extrude=1, altitudemode='absolute')
+            
+            # make it stylish
+            multi.style.polystyle.color = color
+            multi.style.linestyle.color = color
+            
+    ####
+    # make_desc
+    # makes a nice html description
+    def make_descrip(self, co2_str, b_class, b_class_type, e_class, const, san):
+        description = """<![CDATA[
+            <table>
+                <tr>
+                    <td><b> Klasse </b></td>
+                    <td> %s <td>
+                </tr>
+                <tr>
+                    <td> <b> Funktion </b></td>
+                    <td> % s </td>
+                </tr>
+                <tr>
+                    <td><b> Energieklasse </b></td>
+                    <td> %s </td>
+                </tr>
+                <tr>
+                    <td><b> Baujahr <b></td>
+                    <td> %s </td>
+                </tr>
+                <tr>
+                    <td><b> Sanierungsgrad </b></td>
+                    <td> %s </td>
+                </tr>
+                <tr>
+                    <td> <b> CO<sup>2</sup> [kg/a m<sup>3</sup>] <b></td>
+                    <td> %s </td
+                </tr>
+            </table>
+            <hr>
+            <footer>
+                <p> <i>GFZ</i> </p>
+            </footer>
+            ]]>
+        """ % (b_class, b_class_type, e_class, const, san, co2_str)
+        return description
+    
+    ####
+    # make_desc_prot
+    # makes a nice html description for protocol
+    def make_descrip_prot(self, co2_str, b_class, const, san):
+        description = """<![CDATA[
+            <table>
+                <tr>
+                    <td><b> Klasse </b></td>
+                    <td> %s <td>
+                </tr>
+                <tr>
+                    <td><b> Baujahr <b></td>
+                    <td> %s </td>
+                </tr>
+                <tr>
+                    <td><b> Sanierungsgrad </b></td>
+                    <td> %s </td>
+                </tr>
+                <tr>
+                    <td> <b> CO<sup>2</sup> [kg/a m<sup>3</sup>] <b></td>
+                    <td> %.4f </td
+                </tr>
+            </table>
+            <hr>
+            <footer>
+                <p> <i>GFZ</i> </p>
+            </footer>
+            ]]>
+        """ % (b_class,  const, san, co2_str)
+        return description
+    
 ####
-# make_tile
-# makes the kml for a tile
-def make_tile(tile_id, co2_min, co2_max):
-    # set it up
-    db = 'local'
-    user_name = 'bkuster'
-    host_name = '139.17.99.27'
-    passwd = 'benkuster'
+# class definiction of a ground tile
+class ground():
+    configs = get_config()
+    for d in configs:
+        globals().update(d)
 
     db_con = psycopg2.connect("dbname=%s user=%s host=%s password=%s" % (db, user_name, host_name, passwd))
     cur = db_con.cursor()
     
-    # get all the buildings
-    statement = get_sql('sql/get_tile.sql')
-    statement = statement % tile_id
-    
-    cur.execute(statement)
-    buildings = cur.fetchall()
-    
-    if len(buildings) == 0:
-        return 0
-    
-    # make kml
-    the_kml = simplekml.Kml()
-    
-    # iterate over the buildings
-    for b_id in buildings:
-        make_building(b_id, db_con, co2_min, co2_max, the_kml)
+    def __init__(self, geom, geom_id, options, data):
+        self.geom = geom
+        self.id = geom_id
+        self.options = options
+        self.data = data
+        self.the_kml = simplekml.Kml()
         
-    db_con.close()
-    the_kml.save('../data/kml/%s_tile.kml' % tile_id, format=False)
-
+    def run(self):
+        if self.options['protocol']:
+            self.make_ground_prot()
+        elif self.options['difference']:
+            self.make_ground_difference()
+        else:
+            self.make_ground()
+        
+    ####
+    # make_ground
+    # makes the larger overlay for the zoomed image
+    def make_ground(self):
+        # get the values
+        self.cur.execute(get_sql('sql/get_overlay_single.sql')% self.geom)
+        buildings = self.cur.fetchall()
+        
+        # add each building
+        for building in buildings:
+            # get the color
+            co2 = float(building[0])
+            
+            if float(co2) > 0.00001:
+                color = make_hex(co2, self.data[0], self.data[1])
+            else:
+                color = '9fD2D2D2'
+            
+            # get coords
+            coords = make_coords(building[1])
+                
+            # append to multi
+            the_poly = self.the_kml.newpolygon(outerboundaryis=coords)
+            the_poly.style.polystyle.color = color
+            the_poly.style.linestyle.color = color
+    
+        
+        # get the double buildings
+        self.cur.execute(get_sql('sql/get_overlay_double.sql') % self.geom)
+        buildings_2 = self.cur.fetchall()
+        self.cur.close()
+        
+        for building in buildings_2:
+            # get the color
+            co2 = float(building[0])
+            
+            if float(co2) > 0.00001:
+                color = make_hex(co2, self.data[0], self.data[1])
+            else:
+                color = '9fD2D2D2'
+                
+            # make multi
+            multi = self.the_kml.newmultigeometry()
+            for geom in building[1:2]:
+                # get coords
+                coords = make_coords(geom)
+                    
+                # append to multi
+                multi.newpolygon(outerboundaryis=coords)
+                multi.style.polystyle.color = color
+                multi.style.linestyle.color = color
+        
+        self.the_kml.save('../data/kml/ground/%s.kml' % self.geom_id)
+    
+    # protocol ground
+    def make_ground_prot(self):    
+        # get the values
+        statement = get_sql('sql/get_overlay_single_prot.sql')
+        statement = statement.format(self.options['protocol'],self.geom)
+        self.cur.execute(statement)
+        buildings = self.cur.fetchall()
+        
+        # add each building
+        for building in buildings:
+            # get the color
+            co2 = float(building[0])
+            color = self.data[self.data[:,0].astype('int')==int(co2),3][0]
+                    
+            # get coords
+            coords = make_coords(building[1])
+                
+            # append to multi
+            the_poly = self.the_kml.newpolygon(outerboundaryis=coords)
+            the_poly.style.polystyle.color = color
+            the_poly.style.linestyle.color = color
+    
+        
+        # get the double buildings
+        statement = get_sql('sql/get_overlay_double_prot.sql')
+        statement = statement.format(self.options['protocol'], self.geom)
+        self.cur.execute(statement)
+        buildings_2 = self.cur.fetchall()
+        self.cur.close()
+        
+        for building in buildings_2:
+            # get the color
+            co2 = float(building[0])
+            color = self.data[self.data[:,0].astype('int')==int(co2),3][0]
+                        
+            # make multi
+            multi = self.the_kml.newmultigeometry()
+            for geom in building[1:2]:
+                # get coords
+                coords = make_coords(geom)
+                    
+                # append to multi
+                multi.newpolygon(outerboundaryis=coords)
+                multi.style.polystyle.color = color
+                multi.style.linestyle.color = color
+        
+        self.the_kml.save('../data/kml/ground/%s.kml' % self.geom_id)
+    
 ####
 # make_screen
 # makes the screens onto the final kml
@@ -245,73 +482,9 @@ def make_screen(the_kml):
     screen_2.size.yunits = simplekml.Units.fraction
 
 ####
-# make_ground
-# makes the larger overlay for the zoomed image
-def make_ground(geom, geom_id, co2_min, co2_max):
-        # set it up
-    db = 'local'
-    user_name = 'bkuster'
-    host_name = '139.17.99.27'
-    passwd = 'benkuster'
-
-    db_con = psycopg2.connect("dbname=%s user=%s host=%s password=%s" % (db, user_name, host_name, passwd))
-    cur = db_con.cursor()
-    the_kml = simplekml.Kml()
-
-    # get the values
-    cur.execute(get_sql('sql/get_overlay_single.sql')% geom)
-    buildings = cur.fetchall()
-    
-    # add each building
-    for building in buildings:
-        # get the color
-        co2 = float(building[0])
-        
-        if float(co2) > 0.00001:
-            color = make_hex(co2, co2_min, co2_max)
-        else:
-            color = '9fD2D2D2'
-        
-        # get coords
-        coords = make_coords(building[1])
-            
-        # append to multi
-        the_poly = the_kml.newpolygon(outerboundaryis=coords)
-        the_poly.style.polystyle.color = color
-        the_poly.style.linestyle.color = color
-
-    
-    # get the double buildings
-    cur.execute(get_sql('sql/get_overlay_double.sql') % geom)
-    buildings_2 = cur.fetchall()
-    cur.close()
-    
-    for building in buildings_2:
-        # get the color
-        co2 = float(building[0])
-        
-        if float(co2) > 0.00001:
-            color = make_hex(co2, co2_min, co2_max)
-        else:
-            color = '9fD2D2D2'
-            
-        # make multi
-        multi = the_kml.newmultigeometry()
-        for geom in building[1:2]:
-            # get coords
-            coords = make_coords(geom)
-                
-            # append to multi
-            multi.newpolygon(outerboundaryis=coords)
-            multi.style.polystyle.color = color
-            multi.style.linestyle.color = color
-    
-    the_kml.save('../data/kml/ground/%s.kml' % geom_id)
-
-####
 # make_parent
 # makes the network linked parent
-def make_parent(con, co2_min, co2_max, ground_boxes):
+def make_parent(con, ground_boxes):
     # add tiles
     kmls = find_kml('../data/kml')
     cur = con.cursor()
