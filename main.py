@@ -9,7 +9,7 @@ Get 3D info from psql server, and make a nice little kml
 # ENVIRONMENT
 ####
 # sys os
-import sys, os
+import os, sys
 import argparse
 import time
 
@@ -39,6 +39,9 @@ modes.add_argument('-p', '--protocol', help='discrete mode, specify protocol', c
 modes.add_argument('-d', '--difference', 
                     help='difference mode, specify protocol', choices=protocols)
 
+parser.add_argument('-o', '--output', help='output directory of your KMZ file', default = '.')
+parser.add_argument('-k', '--keep', help='keep temporary data. will be deleted on next run', action='store_true')
+
 # output dir
 # parser.add_argument('-o', '--output', help)
 
@@ -50,7 +53,8 @@ options = {# discrete mode protocol
            'protocol': None,
            # diff mode protocol
            'difference': None,
-           'output': None
+           'output': None,
+           'keep': False
            }
 
 # add parser args
@@ -58,8 +62,6 @@ args = parser.parse_args()
 
 # update options
 options.update(vars(args))
-
-# create temp
 
 # parallel
 def enum(*sequential, **named):
@@ -86,8 +88,34 @@ done_workers = []
 
 # master
 if rank == 0:
+    # import only master modules
     import legend
+    import zipfile
     
+    ####
+    # file directory stuff
+    # check passed output
+    if not os.path.exists(options['output']):
+        print('specified output directory does not exist!')
+        comm.Abort()
+        
+    # create temp directories
+    for root, dirs, files in os.walk('../data', topdown=False):
+        for f in files:
+            os.remove(os.path.join(root, f))
+        for d in dirs:
+            os.rmdir(os.path.join(root, d))
+          
+    os.rmdir('../data')
+    
+    # create some paths, depending on where we are
+    dirs = ['../data', '../data/kml', '../data/files', '../data/kml/ground']
+    
+    for path in dirs:
+        os.makedirs(path, exist_ok = True)
+    
+    ####
+    # Preliminary stuff
     # SQL
     configs = kml.get_config()
     for d in configs:
@@ -95,6 +123,7 @@ if rank == 0:
     
     db_con = psycopg2.connect("dbname=%s user=%s host=%s password=%s" % (db, user_name, host_name, passwd))
     cur = db_con.cursor()
+    
     # empty place holder for data (either colors or co2 min max)
     tile_data = []
     # check for mode
@@ -131,12 +160,10 @@ if rank == 0:
     # get the tiles
     cur.execute("SELECT id FROM fishnet")
     tiles = cur.fetchall()
-    tiles = tiles[0:10]
     
     # get the ground tiles
     cur.execute(kml.get_sql('sql/get_overlay_fishnet.sql'))
     boxes = cur.fetchall()
-    boxes = boxes[1:4]
     
     geom_array = np.array(boxes)
     geom_array = np.append(geom_array, np.array(range(0, len(geom_array)), ndmin =2).T, axis = 1)
@@ -144,6 +171,8 @@ if rank == 0:
     # close connection
     db_con.close()
     
+    ####
+    # Multi stuff
     task_index = 0
     num_workers = size - 1
     closed_workers = 0
@@ -187,6 +216,36 @@ if rank == 0:
     print("Master finishing")
     db_con = psycopg2.connect("dbname=%s user=%s host=%s password=%s" % (db, user_name, host_name, passwd))
     kml.make_parent(db_con, geom_array)
+    
+    ####
+    # the zipping part
+    print("Making KMZ")
+    if options['protocol']:
+        kmz_name = 'potsdam_local_' + options['protocol'] + '.kmz'
+    elif options['difference']:
+        kmz_name = 'potsdam_local_difference_' + options['difference'] + '.kmz'
+    else:
+        kmz_name = 'potsdam_local.kmz' 
+        
+    kmz = zipfile.ZipFile(kmz_name, mode = 'w')
+    
+    for root, dirs, files in os.walk('../data', topdown=False):
+        for f in files:
+            kmz.write(os.path.join(root, f), compress_type = zipfile.ZIP_DEFLATED)
+    
+    kmz.close()
+    
+    # delete if not kept
+    if not options['keep']:
+        for root, dirs, files in os.walk('../data', topdown=False):
+            for f in files:
+                os.remove(os.path.join(root, f))
+            for d in dirs:
+                os.rmdir(os.path.join(root, d))
+          
+    os.rmdir('../data')
+    print('done')
+    
 else:
     # Worker processes execute code below
     name = MPI.Get_processor_name()
@@ -211,6 +270,7 @@ else:
             tile_data = task[2]
             # do it
             the_ground = kml.ground(geom, geom_id, options, tile_data)
+            the_ground.run()
             comm.send(None, dest=0, tag=tags.DONE)
         elif tag == tags.EXIT:
             done_workers.append(rank)

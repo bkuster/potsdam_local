@@ -5,9 +5,9 @@ SELECT cityobject_id AS vol_id,
     WHERE attrname = 'volume'
 ), co2 AS (
     SELECT *
-      FROM mapping.building_sector_{0}
+      FROM mapping.building_sector_{0!s}
     INNER JOIN public.cityobject_genericattrib
-      ON building_sector_{0}.id=cityobject_genericattrib.cityobject_id
+      ON building_sector_{0!s}.id=cityobject_genericattrib.cityobject_id
     INNER JOIN volume
       ON cityobject_id = vol_id
     WHERE attrname='i_co2'
@@ -27,8 +27,8 @@ SELECT cityobject_id,
   warmekataster.rt_baujahr.description,
   warmekataster.rt_sanierung.description
     FROM cityobject_genericattrib
-    LEFT JOIN mapping.building_sector_{0}
-      ON building_sector_{0}.id = cityobject_genericattrib.cityobject_id
+    LEFT JOIN mapping.building_sector_{0!s}
+      ON building_sector_{0!s}.id = cityobject_genericattrib.cityobject_id
     LEFT JOIN summed
       ON sector_name = sector
     INNER JOIN address_to_building
@@ -45,4 +45,4 @@ SELECT cityobject_id,
       ON CAST(b_baujahr_ AS integer) = rt_baujahr.baujahr_id
     LEFT JOIN warmekataster.rt_sanierung
       ON b_sanierun = rt_sanierung.sanierung_id
-    WHERE attrname = 'i_co2' AND cityobject_id = {1:d};
+    WHERE attrname = 'i_co2' AND cityobject_id = {1};

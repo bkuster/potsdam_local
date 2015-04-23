@@ -101,13 +101,13 @@ class tile():
     cur = db_con.cursor()
     tile_stat = -1
     
-    def __init__(self, options, tile_id, data):
+    def __init__(self, tile_id, options, data):
         # assign passed arguments
         self.tile_id = tile_id
         self.options = options
         self.data = data
         self.id = tile_id
-        self.kml = simplekml.Kml()
+        self.the_kml = simplekml.Kml()
     
     ####
     # make_tile
@@ -198,7 +198,8 @@ class tile():
     def make_building_prot(self, b_id):
         # make the statement
         statement = get_sql('sql/get_building_prot.sql')
-        statement = statement.format(self.options['protocol'], b_id)
+        prot = self.options['protocol']
+        statement = statement.format(prot, b_id[0])
         
         # get the info
         cur = self.db_con.cursor()
@@ -398,7 +399,8 @@ class ground():
     def make_ground_prot(self):    
         # get the values
         statement = get_sql('sql/get_overlay_single_prot.sql')
-        statement = statement.format(self.options['protocol'],self.geom)
+        prot = self.options['protocol']
+        statement = statement.format(prot, self.geom)
         self.cur.execute(statement)
         buildings = self.cur.fetchall()
         
