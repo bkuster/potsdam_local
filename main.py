@@ -8,210 +8,344 @@ Get 3D info from psql server, and make a nice little kml
 ####
 # ENVIRONMENT
 ####
-# other files
-import kml
-import simplekml
-
 # sys os
-import sys
-import re
+import os, sys
+import argparse
+import time
 
 # sql & numpy
 import psycopg2
 import numpy as np
 
-# color and plot
-import colorsys
-import matplotlib as mpl
-import matplotlib.pyplot as plt
-
 # parallel processing
-import pp
+from mpi4py import MPI
+import kml
 
 ####
 # FUCNTION
 ####
-# make_actual_hex
-# makes actual html hex for matplotlib
-def make_descrete_hex(the_array):
-    max_x = len(the_array[:,0])-1
-    min_x = 0
-    the_hex = []
-    kml_hex = []
-    
-    for i in range(0, len(the_array[:,0])):
-        h = (float(max_x-i) / (max_x-min_x)) * 120
-        
-        # convert hsv color (h,1,1) to its rgb equivalent
-        r, g, b = colorsys.hsv_to_rgb(h/360, .6, 1.)
-        
-        # make hex
-        the_hex.append("#%02x%02x%02x"  % (int(r*255), int(g*255), int(b*255)))
-        temp = simplekml.Color.rgb(int(r*255), int(g*255), int(b*255))
-        temp = re.sub('^.{2}','9f', temp)
-        kml_hex.append(temp)
-    
-    the_array = np.append(the_array, np.array(the_hex, ndmin=2).T, axis=1)
-    the_array = np.append(the_array, np.array(kml_hex, ndmin=2).T, axis=1)
-    return(the_array)
+parser = argparse.ArgumentParser(description="""
+Create a KMZ file for the Postdam LOCAL CityGML DB. 
+Modes can be specified via command line.
+Default will result in per building CO2 value representation
+""")
 
-# add_bar
-# plots the color ramp
-def add_legend(the_array):
-    # get number
-    n = len(the_array[:,0])
-    dpi = 80
-    
-    # make fig with n*2 width
-    fig = plt.figure(figsize=(4*n, 3),dpi=dpi)
-    
-    # add axes
-    ax = fig.add_axes([0.05, 0.2, 0.9, 0.9], 
-                      yticklabels=str(), yticks = [0.],
-                      xlim=[0, n+0.2], 
-                      xticks = [0.],
-                      xticklabels = str())
-    
-    i = 0.1
-    for row in the_array:
-        col = row[2]
-        rect = mpl.patches.Rectangle([i+0.1, 0.2], 
-                                     0.8, 
-                                     0.5, 
-                                     color = col)
-        ax.add_patch(rect)
-        ax.annotate('%.2f' % float(row[0]), 
-                    [i+0.5, 0.55], 
-                    color = 'black', fontsize = 32, 
-                    ha = 'center', va = 'center',
-                    fontweight = 'bold')
-        
-        # add class
-        the_class = row[1].split()[0]
-        the_class = re.sub(',', '', the_class)
-        ax.annotate(the_class,
-                    [i+0.5, 0.3],
-                    color = 'black', fontsize = 22,
-                    ha = 'center', va = 'center',
-                    fontweight = 'bold')
-        i += 1
+# available protocols
+protocols = ['ccr', 'gpc', 'ecoregion']
 
-    # show figure to get ticks
-    fig.text(0.5, 0.18, r'\textbf{CO2} [$\mathbf{kg/a\;m^3}$]', 
-             ha = 'center', va = 'center',
-             color = 'white', fontsize = 48, fontweight = 'bold')
-    fig.show()
-        
+# modes are exclusive, group
+modes = parser.add_mutually_exclusive_group()
+modes.add_argument('-p', '--protocol', help='discrete mode, specify protocol', choices=protocols)
+modes.add_argument('-d', '--difference', 
+                    help='difference mode, specify protocol', choices=protocols)
+
+parser.add_argument('-o', '--output', help='output directory of your KMZ file', default = '.')
+parser.add_argument('-k', '--keep', help='keep temporary data. will be deleted on next run', action='store_true')
+
+# output dir
+# parser.add_argument('-o', '--output', help)
+
 ####
 # SETUP
 ####
-# SQL
-configs = kml.get_config()
-for d in configs:
-    globals().update(d)
+# options
+options = {# discrete mode protocol
+           'protocol': None,
+           # diff mode protocol
+           'difference': None,
+           'output': None,
+           'keep': False
+           }
 
-db_con = psycopg2.connect("dbname=%s user=%s host=%s password=%s" % (db, user_name, host_name, passwd))
-cur = db_con.cursor()
+# add parser args
+args = parser.parse_args()
 
-# matplot
-mpl.rc('font',**{'family':'sans-serif','sans-serif':['Helvetica']})
-mpl.rcParams['text.usetex'] = True
-mpl.rcParams['xtick.labelsize'] = 30
-mpl.rcParams['xtick.color'] = "white"
-mpl.rcParams['ytick.labelsize'] = 12
-mpl.rcParams['axes.edgecolor'] = 'white'
-mpl.rcParams['axes.linewidth'] = 0.
-mpl.rcParams['axes.labelcolor'] = 'white'
+# update options
+options.update(vars(args))
 
 # parallel
-job_server = pp.Server(ncpus=8)
+def enum(*sequential, **named):
+    """Handy way to fake an enumerated type in Python
+    http://stackoverflow.com/questions/36932/how-can-i-represent-an-enum-in-python
+    """
+    enums = dict(zip(sequential, range(len(sequential))), **named)
+    return type('Enum', (), enums)
 
-# get protocol
-prot = sys.argv[1]
+# Define MPI message tags
+tags = enum('READY', 'DONE', 'EXIT', 'START_3D', 'START_GR')
+
+# commander
+comm = MPI.COMM_WORLD
 
 ####
 # EXECUTIONS
 ####
-statement = kml.get_sql('sql/get_vals.sql')
-statement = statement.format(prot)
-cur.execute(statement)
-vals = np.array(cur.fetchall())
+# get MPI working
+size = comm.Get_size()
+rank = comm.Get_rank()
+status = MPI.Status()
+done_workers = []
 
-# color array
-colors = make_descrete_hex(vals)
-add_legend(colors)
-plt.savefig('../data/files/color_ramp.png', format='png', transparent=True)
-
-# get the tiles
-cur.execute("SELECT id FROM fishnet")
-tiles = cur.fetchall()
-
-# close connection
-db_con.close()
-
-jobs = []
-for tile_id in tiles:
-    the_out = job_server.submit(func=kml.make_tile, 
-                                  depfuncs=(kml.make_building, 
-                                            kml.get_sql, 
-                                            kml.make_descrip,
-                                            kml.make_coords,
-                                            kml.get_config), 
-                                  args=(tile_id, prot, colors),
-                                  modules=("kml","simplekml", "psycopg2","re", "os", "ConfigParser", )
-                                  )
-    jobs.append(the_out)
+# master
+if rank == 0:
+    # import only master modules
+    import legend
+    import zipfile
     
-job_server.wait()
-
-# get errors
-for job in jobs:
-    what = job()
-    if what not in (0,1):
-        print what
-           
-job_server.print_stats()
-
-# get ground
-db_con = psycopg2.connect("dbname=%s user=%s host=%s password=%s" % (db, user_name, host_name, passwd))
-cur = db_con.cursor()
-cur.execute(kml.get_sql('sql/get_overlay_fishnet.sql'))
-boxes = cur.fetchall()
-
-db_con.close()
-
-# set it up
-geom_id = 1
-jobs = []
-ids = []
-for box in boxes:
-    geom = box[0]
-    ids.append(geom_id)
+    ####
+    # file directory stuff
+    # check passed output
+    if not os.path.exists(options['output']):
+        print('specified output directory does not exist!')
+        comm.Abort()
+        
+    # create temp directories
+    for root, dirs, files in os.walk('../data', topdown=False):
+        for f in files:
+            os.remove(os.path.join(root, f))
+        for d in dirs:
+            os.rmdir(os.path.join(root, d))
+          
+    os.rmdir('../data')
     
-    the_out = job_server.submit(func=kml.make_ground, 
-                                  depfuncs=(kml.get_sql,
-                                            kml.make_coords,
-                                            kml.get_config), 
-                                  args=(geom, geom_id, prot, colors),
-                                  modules=("kml","simplekml", "psycopg2","re", "os", "ConfigParser", )
-                                  )
-    jobs.append(the_out)
+    # create some paths, depending on where we are
+    dirs = ['../data', '../data/kml', '../data/files', '../data/kml/ground']
     
-    geom_id += 1
+    for path in dirs:
+        os.makedirs(path, exist_ok = True)
+    
+    ####
+    # Preliminary stuff
+    # SQL
+    configs = kml.get_config()
+    for d in configs:
+        globals().update(d)
+    
+    db_con = psycopg2.connect("dbname=%s user=%s host=%s password=%s" % (db, user_name, host_name, passwd))
+    cur = db_con.cursor()
+    
+    # empty place holder for data (either colors or co2 min max)
+    tile_data = []
+    # check for mode
+    if options['protocol']:
+        prot = options['protocol']
+        # get values
+        statement = kml.get_sql('sql/get_vals.sql')
+        statement = statement.format(prot)
+        cur.execute(statement)
+        vals = np.array(cur.fetchall())
+        
+        # make color
+        plot = legend.the_legend(True, vals)
+        plot.make_discrete_hex()
+        plot.add_legend()
+        plot.save_plot()
+        
+        # add tile_data
+        tile_data = plot.data
+    else:
+        statement = kml.get_sql('sql/get_quantiles.sql')
+        cur.execute(statement)
+        quantiles = np.array(cur.fetchall()).astype(float)
 
-job_server.wait()
+        co2_min = 0.0
+        co2_max = float(quantiles[3]+(3*(quantiles[3]-quantiles[1])))
+        
+        tile_data = [co2_min, co2_max]
+        # make plot
+        plot = legend.the_legend(False, tile_data)
+        plot.add_bars(250)
+        plot.save_plot()
+        
+    # get the tiles
+    cur.execute("SELECT id FROM fishnet")
+    tiles = cur.fetchall()
+    
+    # get the ground tiles
+    cur.execute(kml.get_sql('sql/get_overlay_fishnet.sql'))
+    boxes = cur.fetchall()
+    
+    geom_array = np.array(boxes)
+    geom_array = np.append(geom_array, np.array(range(0, len(geom_array)), ndmin =2).T, axis = 1)
 
-for job in jobs:
-    what = job()
-    if what not in (0,1):
-        print what
+    # close connection
+    db_con.close()
+    
+    ####
+    # Multi stuff
+    task_index = 0
+    num_workers = size - 1
+    closed_workers = 0
+    
+    # start dishing out
+    while closed_workers < num_workers:
+        # save some CPU
+        while not comm.Iprobe(source = MPI.ANY_SOURCE, tag = MPI.ANY_TAG):
+            time.sleep(0.1)
+        
+        # go!    
+        data = comm.recv(source = MPI.ANY_SOURCE, tag = MPI.ANY_TAG, status = status)
+        source = status.Get_source()
+        tag = status.Get_tag()
 
-job_server.print_stats()
-
-geom_array = np.array(boxes)
-geom_array = np.append(geom_array, np.array(ids, ndmin=2).T, axis = 1)
-
-# open up again
-db_con = psycopg2.connect("dbname=%s user=%s host=%s password=%s" % (db, user_name, host_name, passwd))
-kml.make_parent(db_con, geom_array)
-db_con.close()
+        # more tasks to give!
+        if tag == tags.READY:
+            # the 3D first
+            if task_index < len(tiles):
+                comm.send([tiles[task_index], tile_data], dest=source, tag=tags.START_3D)
+                print("Sending 3D task %d to worker %d" % (task_index, source))
+                task_index += 1
+            # the ground second
+            elif task_index >= len(tiles) and task_index < len(tiles)+len(boxes):
+                comm.send([geom_array[int(task_index - len(tiles)), 0],
+                               geom_array[int(task_index - len(tiles)), 1],
+                               tile_data], dest=source, tag=tags.START_GR)
+                print("Sending GR task %d to worker %d" % (task_index, source))
+                task_index += 1
+            # no more tasks to give!
+            else:
+                comm.send(None, dest=source, tag=tags.EXIT)
+        elif tag == tags.DONE:
+            results = data
+            print("Got data from worker %d" % source)
+        elif tag == tags.EXIT:
+            print("Worker %d exited." % source)
+            closed_workers += 1
+            print(closed_workers)
+            
+    print("Master finishing")
+    db_con = psycopg2.connect("dbname=%s user=%s host=%s password=%s" % (db, user_name, host_name, passwd))
+    kml.make_parent(db_con, geom_array)
+    
+    ####
+    # the zipping part
+    print("Making KMZ")
+    if options['protocol']:
+        kmz_name = 'potsdam_local_' + options['protocol'] + '.kmz'
+    elif options['difference']:
+        kmz_name = 'potsdam_local_difference_' + options['difference'] + '.kmz'
+    else:
+        kmz_name = 'potsdam_local.kmz' 
+        
+    kmz = zipfile.ZipFile(kmz_name, mode = 'w')
+    
+    for root, dirs, files in os.walk('../data', topdown=False):
+        for f in files:
+            kmz.write(os.path.join(root, f), compress_type = zipfile.ZIP_DEFLATED)
+    
+    kmz.close()
+    
+    # delete if not kept
+    if not options['keep']:
+        for root, dirs, files in os.walk('../data', topdown=False):
+            for f in files:
+                os.remove(os.path.join(root, f))
+            for d in dirs:
+                os.rmdir(os.path.join(root, d))
+          
+    os.rmdir('../data')
+    print('done')
+    
+else:
+    # Worker processes execute code below
+    name = MPI.Get_processor_name()
+    print("I am a worker with rank %d on %s." % (rank, name))
+    while True:
+        comm.send(None, dest=0, tag=tags.READY)                  
+        task = comm.recv(source=0, tag=MPI.ANY_TAG, status=status)
+        tag = status.Get_tag()
+        if tag == tags.START_3D:
+            # break it down
+            tile_id = task[0]
+            tile_data = task[1]
+            
+            # Do the work here
+            the_tile = kml.tile(tile_id, options, tile_data)
+            the_tile.make_tile()
+            comm.send(the_tile.tile_stat, dest=0, tag=tags.DONE)
+        elif tag == tags.START_GR:
+            # break it down again
+            geom = task[0]
+            geom_id = task[1]
+            tile_data = task[2]
+            # do it
+            the_ground = kml.ground(geom, geom_id, options, tile_data)
+            the_ground.run()
+            comm.send(None, dest=0, tag=tags.DONE)
+        elif tag == tags.EXIT:
+            done_workers.append(rank)
+            break
+        
+    comm.send(None, dest=0, tag=tags.EXIT)
+    
+#if rank == 0:
+        
+"""
+# the continous part
+else:
+    statement = kml.get_sql('sql/get_quantiles.sql')
+    cur.execute(statement)
+    quantiles = np.array(cur.fetchall()).astype(float)
+    
+    co2_min = 0.0
+    co2_max = float(quantiles[3]+(3*(quantiles[3]-quantiles[1])))
+    
+    # make color ramp
+    plot = legend.the_legend(False, [co2_min, co2_max])
+    plot.add_bars(250)
+    plot.save_plot()
+    
+    # get the tiles
+    cur.execute("SELECT id FROM fishnet")
+    tiles = cur.fetchall()
+    
+    jobs = []
+    for tile_id in tiles:
+        the_out = job_server.submit(func=kml.make_tile, 
+                                      depfuncs=(kml.make_building, 
+                                                kml.get_sql, 
+                                                kml.make_hex, 
+                                                kml.make_descrip,
+                                                kml.make_coords), 
+                                      args=(tile_id, co2_min, co2_max),
+                                      modules=("kml","simplekml", "psycopg2","re", "os", "colorsys", )
+                                      )
+        jobs.append(the_out)
+    
+    job_server.wait()   
+    job_server.print_stats()
+    
+    # get ground
+    db_con = psycopg2.connect("dbname=%s user=%s host=%s password=%s" % (db, user_name, host_name, passwd))
+    cur = db_con.cursor()
+    cur.execute(kml.get_sql('sql/get_overlay_fishnet.sql'))
+    boxes = cur.fetchall()
+    
+    db_con.close()
+    
+    # set it up
+    geom_id = 1
+    jobs = []
+    ids = []
+    for box in boxes:
+        geom = box[0]
+        ids.append(geom_id)
+        the_out = job_server.submit(func=kml.make_ground, 
+                                      depfuncs=(kml.get_sql, 
+                                                kml.make_hex,
+                                                kml.make_coords), 
+                                      args=(geom, geom_id, co2_min, co2_max),
+                                      modules=("kml","simplekml", "psycopg2","re", "os", "colorsys", )
+                                      )
+        jobs.append(the_out)
+        geom_id += 1
+    
+    job_server.wait()   
+    job_server.print_stats()
+    
+    geom_array = np.array(boxes)
+    geom_array = np.append(geom_array, np.array(ids, ndmin=2).T, axis = 1)
+    
+    kml.make_parent(db_con, co2_min, co2_max, geom_array)
+    db_con.close()
+"""
