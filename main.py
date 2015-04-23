@@ -9,7 +9,7 @@ Get 3D info from psql server, and make a nice little kml
 # ENVIRONMENT
 ####
 # sys os
-import os, sys
+import os
 import argparse
 import time
 
@@ -100,13 +100,18 @@ if rank == 0:
         comm.Abort()
         
     # create temp directories
-    for root, dirs, files in os.walk('../data', topdown=False):
-        for f in files:
-            os.remove(os.path.join(root, f))
-        for d in dirs:
-            os.rmdir(os.path.join(root, d))
+    try:
+        for root, dirs, files in os.walk('../data', topdown=False):
+            for f in files:
+                os.remove(os.path.join(root, f))
+            for d in dirs:
+                os.rmdir(os.path.join(root, d))
+                
+            os.rmdir('../data')
+    except:
+        print('nothing to purge, moving on')
           
-    os.rmdir('../data')
+   
     
     # create some paths, depending on where we are
     dirs = ['../data', '../data/kml', '../data/files', '../data/kml/ground']
@@ -143,6 +148,19 @@ if rank == 0:
         
         # add tile_data
         tile_data = plot.data
+    elif options['difference']:
+        statement = kml.get_sql('sql/get_quantiles_diff.sql')
+        cur.execute(statement.format(options['difference']))
+        quantiles = np.array(cur.fetchall()).astype(float)
+
+        co2_min = 0.0
+        co2_max = float(quantiles[3]+(3*(quantiles[3]-quantiles[1])))
+        
+        tile_data = [co2_min, co2_max]
+        # make plot
+        plot = legend.the_legend(False, tile_data)
+        plot.add_bars(250)
+        plot.save_plot()   
     else:
         statement = kml.get_sql('sql/get_quantiles.sql')
         cur.execute(statement)
@@ -160,10 +178,12 @@ if rank == 0:
     # get the tiles
     cur.execute("SELECT id FROM fishnet")
     tiles = cur.fetchall()
+    tiles = tiles[0:10]
     
     # get the ground tiles
     cur.execute(kml.get_sql('sql/get_overlay_fishnet.sql'))
     boxes = cur.fetchall()
+    boxes = boxes[0:4]
     
     geom_array = np.array(boxes)
     geom_array = np.append(geom_array, np.array(range(0, len(geom_array)), ndmin =2).T, axis = 1)
@@ -243,7 +263,7 @@ if rank == 0:
             for d in dirs:
                 os.rmdir(os.path.join(root, d))
           
-    os.rmdir('../data')
+            os.rmdir('../data')
     print('done')
     
 else:

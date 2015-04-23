@@ -27,16 +27,18 @@ SELECT cityobject_id,
   warmekataster.rt_baujahr.description,
   warmekataster.rt_sanierung.description
     FROM cityobject_genericattrib
+    INNER JOIN building ON
+      cityobject_id = building.id
     LEFT JOIN mapping.building_sector_{0}
       ON building_sector_{0}.id = cityobject_genericattrib.cityobject_id
     LEFT JOIN summed
       ON sector_name = sector
+    INNER JOIN volume
+      ON building.id = vol_id
     INNER JOIN address_to_building
       ON building_id = cityobject_id
     INNER JOIN address
       ON address.id = address_to_building.address_id
-    INNER JOIN building ON
-      cityobject_id = building.id
     INNER JOIN warmekataster.bestand
       ON building.name = a_objektna
     LEFT JOIN warmekataster.rt_gebaude_typ
@@ -45,4 +47,4 @@ SELECT cityobject_id,
       ON CAST(b_baujahr_ AS integer) = rt_baujahr.baujahr_id
     LEFT JOIN warmekataster.rt_sanierung
       ON b_sanierun = rt_sanierung.sanierung_id
-    WHERE attrname = 'i_co2' AND cityobject_id = {1:d};
+    WHERE attrname = 'i_co2' AND cityobject_id = {1};

@@ -13,7 +13,7 @@ import simplekml
 import colorsys
 import re
 import psycopg2
-import os, sys
+import os
 import numpy as np
 
 ####
@@ -75,9 +75,9 @@ def make_coords(wkt):
 # makes kml hex
 def make_hex(x, max_x, min_x):
     # make hsv h from  0..120 red .. green
-    if x < max_x[0]:
+    if x < max_x:
         h = 120
-    elif x > min_x[1]:
+    elif x > min_x:
         h = 0
     else:
         h = (float(max_x-x) / (max_x-min_x)) * 120
@@ -193,6 +193,61 @@ class tile():
             multi.style.linestyle.color = color
     
     ####
+    # make_building_diff
+    # adds the kml for a building
+    def make_building_diff(self, b_id):
+        # make the statement
+        statement = get_sql('sql/get_building_diff.sql')
+        statement = statement.format(self.options['difference'], b_id[0])
+        
+        # get the info
+        cur = self.db_con.cursor()
+        cur.execute(statement)
+        the_set = cur.fetchone()
+        
+        # assign values
+        building_id = the_set[0]
+        co2 = the_set[1]
+        addr = the_set[2]
+        b_class = the_set[3]
+        b_class_type = the_set[4]
+        e_class = the_set[5]
+        const = the_set[6]
+        san = the_set[7]
+            
+        # make color ramp
+        if float(co2) > 0.00001:
+            color = make_hex(float(co2), self.data[0], self.data[1])
+            co2_str = "%.4f" % co2
+        else:
+            color = '9fD2D2D2'
+            co2_str = 'NA'
+            
+        # create the multi geometry
+        multi = self.the_kml.newmultigeometry(name="%s" %(addr), 
+                                         description= self.make_descrip_diff(self.options['difference'],
+                                                                             co2_str, b_class, const, san))
+        
+        statement = get_sql('sql/get_geoms.sql')
+        statement = statement % building_id
+        
+        # get polygons
+        cur.execute(statement)
+        geoms = cur.fetchall()
+        
+        # loop over geoms
+        for tupls in geoms:
+            # get coords
+            coords = make_coords(tupls[0])
+                
+            # append to multi
+            multi.newpolygon(outerboundaryis=coords, extrude=1, altitudemode='absolute')
+            
+            # make it stylish
+            multi.style.polystyle.color = color
+            multi.style.linestyle.color = color
+            
+    ####
     # make_building
     # adds the kml for a building
     def make_building_prot(self, b_id):
@@ -225,7 +280,8 @@ class tile():
         
         # create the multi geometry
         multi = self.the_kml.newmultigeometry(name="%s" %(addr), 
-                                         description = self.make_descrip_prot(co2, b_class, const, san))
+                                         description = self.make_descrip_prot(self.options['protocol'], 
+                                                                              co2, b_class, const, san))
         
         statement = get_sql('sql/get_geoms.sql')
         statement = statement % building_id
@@ -288,9 +344,12 @@ class tile():
     ####
     # make_desc_prot
     # makes a nice html description for protocol
-    def make_descrip_prot(self, co2_str, b_class, const, san):
+    def make_descrip_prot(self, prot, co2_str, b_class, const, san):
         description = """<![CDATA[
             <table>
+                <tr>
+                    <td><b> Protokol </b></td>
+                    <td> %s <td>
                 <tr>
                     <td><b> Klasse </b></td>
                     <td> %s <td>
@@ -313,7 +372,41 @@ class tile():
                 <p> <i>GFZ</i> </p>
             </footer>
             ]]>
-        """ % (b_class,  const, san, co2_str)
+        """ % (prot, b_class,  const, san, co2_str)
+        return description
+    
+    ####
+    # make_desc_prot
+    # makes a nice html description for protocol
+    def make_descrip_diff(self, prot, co2_str, b_class, const, san):
+        description = """<![CDATA[
+            <table>
+                <tr>
+                    <td><b> Protokol </b></td>
+                    <td> %s <td>
+                <tr>
+                    <td><b> Klasse </b></td>
+                    <td> %s <td>
+                </tr>
+                <tr>
+                    <td><b> Baujahr <b></td>
+                    <td> %s </td>
+                </tr>
+                <tr>
+                    <td><b> Sanierungsgrad </b></td>
+                    <td> %s </td>
+                </tr>
+                <tr>
+                    <td> <b> CO<sup>2</sup> [kg/a m<sup>3</sup>] <b></td>
+                    <td> %s </td
+                </tr>
+            </table>
+            <hr>
+            <footer>
+                <p> <i>GFZ</i> </p>
+            </footer>
+            ]]>
+        """ % (prot, b_class,  const, san, co2_str)
         return description
     
 ####
@@ -337,7 +430,7 @@ class ground():
         if self.options['protocol']:
             self.make_ground_prot()
         elif self.options['difference']:
-            self.make_ground_difference()
+            self.make_ground_diff()
         else:
             self.make_ground()
         
@@ -393,8 +486,67 @@ class ground():
                 multi.style.polystyle.color = color
                 multi.style.linestyle.color = color
         
-        self.the_kml.save('../data/kml/ground/%s.kml' % self.geom_id)
+        self.the_kml.save('../data/kml/ground/%s.kml' % self.id)
     
+    ###
+    # make_ground_diff 
+    # for the difference map
+    def make_ground_diff(self):
+        # get the values
+        statement = get_sql('sql/get_overlay_single_diff.sql')
+        prot = self.options['difference']
+        statement = statement.format(prot, self.geom)
+        self.cur.execute(statement)
+        buildings = self.cur.fetchall()
+        
+        # add each building
+        for building in buildings:
+            # get the color
+            co2 = float(building[0])
+            
+            if float(co2) > 0.00001:
+                color = make_hex(co2, self.data[0], self.data[1])
+            else:
+                color = '9fD2D2D2'
+            
+            # get coords
+            coords = make_coords(building[1])
+                
+            # append to multi
+            the_poly = self.the_kml.newpolygon(outerboundaryis=coords)
+            the_poly.style.polystyle.color = color
+            the_poly.style.linestyle.color = color
+    
+        
+        # get the double buildings
+        statement = get_sql('sql/get_overlay_double_diff.sql')
+        prot = self.options['difference']
+        statement = statement.format(prot, self.geom)
+        self.cur.execute(statement)
+        buildings_2 = self.cur.fetchall()
+        
+        for building in buildings_2:
+            # get the color
+            co2 = float(building[0])
+            
+            if float(co2) > 0.00001:
+                color = make_hex(co2, self.data[0], self.data[1])
+            else:
+                color = '9fD2D2D2'
+                
+            # make multi
+            multi = self.the_kml.newmultigeometry()
+            for geom in building[1:2]:
+                # get coords
+                coords = make_coords(geom)
+                    
+                # append to multi
+                multi.newpolygon(outerboundaryis=coords)
+                multi.style.polystyle.color = color
+                multi.style.linestyle.color = color
+        
+        self.the_kml.save('../data/kml/ground/%s.kml' % self.id)
+        
     # protocol ground
     def make_ground_prot(self):    
         # get the values
@@ -442,7 +594,7 @@ class ground():
                 multi.style.polystyle.color = color
                 multi.style.linestyle.color = color
         
-        self.the_kml.save('../data/kml/ground/%s.kml' % self.geom_id)
+        self.the_kml.save('../data/kml/ground/%s.kml' % self.id)
     
 ####
 # make_screen
