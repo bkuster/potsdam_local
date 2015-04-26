@@ -135,7 +135,7 @@ class tile():
                     self.make_building(b_id)
                 
             self.db_con.close()
-            self.the_kml.save('../data/kml/%s_tile.kml' % self.id, format=False)
+            self.the_kml.save('./temp/kml/%s_tile.kml' % self.id, format=False)
             self.tile_stat = 1
     
     ####
@@ -486,7 +486,7 @@ class ground():
                 multi.style.polystyle.color = color
                 multi.style.linestyle.color = color
         
-        self.the_kml.save('../data/kml/ground/%s.kml' % self.id)
+        self.the_kml.save('./temp/kml/ground/%s.kml' % self.id)
     
     ###
     # make_ground_diff 
@@ -545,7 +545,7 @@ class ground():
                 multi.style.polystyle.color = color
                 multi.style.linestyle.color = color
         
-        self.the_kml.save('../data/kml/ground/%s.kml' % self.id)
+        self.the_kml.save('./temp/kml/ground/%s.kml' % self.id)
         
     # protocol ground
     def make_ground_prot(self):    
@@ -594,7 +594,7 @@ class ground():
                 multi.style.polystyle.color = color
                 multi.style.linestyle.color = color
         
-        self.the_kml.save('../data/kml/ground/%s.kml' % self.id)
+        self.the_kml.save('./temp/kml/ground/%s.kml' % self.id)
     
 ####
 # make_screen
@@ -640,7 +640,7 @@ def make_screen(the_kml):
 # makes the network linked parent
 def make_parent(con, ground_boxes):
     # add tiles
-    kmls = find_kml('../data/kml')
+    kmls = find_kml('./temp/kml')
     cur = con.cursor()
     
     # make the parent 
@@ -710,5 +710,5 @@ def make_parent(con, ground_boxes):
         
     cur.close()
     make_screen(parent)
-    parent.save('../data/parent.kml')
+    parent.save('./temp/parent.kml')
         

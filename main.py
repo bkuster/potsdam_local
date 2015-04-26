@@ -39,8 +39,8 @@ modes.add_argument('-p', '--protocol', help='discrete mode, specify protocol', c
 modes.add_argument('-d', '--difference', 
                     help='difference mode, specify protocol', choices=protocols)
 
-parser.add_argument('-o', '--output', help='output directory of your KMZ file', default = '.')
-parser.add_argument('-k', '--keep', help='keep temporary data. will be deleted on next run', action='store_true')
+parser.add_argument('-o', '--output', help='output directory of your KMZ file (absolute path)', default = '.')
+parser.add_argument('-k', '--keep', help='keep temporary data. will be overwritten on next run', action='store_true')
 
 # output dir
 # parser.add_argument('-o', '--output', help)
@@ -91,6 +91,7 @@ if rank == 0:
     # import only master modules
     import legend
     import zipfile
+    import shutil
     
     ####
     # file directory stuff
@@ -101,23 +102,29 @@ if rank == 0:
         
     # create temp directories
     try:
-        for root, dirs, files in os.walk('../data', topdown=False):
+        for root, dirs, files in os.walk('./temp', topdown=False):
             for f in files:
                 os.remove(os.path.join(root, f))
             for d in dirs:
                 os.rmdir(os.path.join(root, d))
                 
-            os.rmdir('../data')
+            os.rmdir('./temp')
     except:
-        print('nothing to purge, moving on')
+        print('HINT: nothing to purge, moving on')
           
    
     
     # create some paths, depending on where we are
-    dirs = ['../data', '../data/kml', '../data/files', '../data/kml/ground']
+    dirs = ['./temp', './temp/kml', './temp/files', './temp/kml/ground']
     
     for path in dirs:
         os.makedirs(path, exist_ok = True)
+        
+    # move the logo, if it exists
+    try:
+        shutil.move('./data/logo.png', './temp/files/logo.png')
+    except:
+        print('WARNING: no logo found. can be added later')
     
     ####
     # Preliminary stuff
@@ -240,6 +247,9 @@ if rank == 0:
     ####
     # the zipping part
     print("Making KMZ")
+    
+    # change path to ./temp
+    os.chdir('./temp')
     if options['protocol']:
         kmz_name = 'potsdam_local_' + options['protocol'] + '.kmz'
     elif options['difference']:
@@ -249,21 +259,26 @@ if rank == 0:
         
     kmz = zipfile.ZipFile(kmz_name, mode = 'w')
     
-    for root, dirs, files in os.walk('../data', topdown=False):
+    for root, dirs, files in os.walk('.', topdown=False):
         for f in files:
-            kmz.write(os.path.join(root, f), compress_type = zipfile.ZIP_DEFLATED)
+            if not f == kmz_name: # dont include the kmz itself!
+                kmz.write(os.path.join(root, f), compress_type = zipfile.ZIP_DEFLATED)
     
     kmz.close()
     
+    # move the file to root and back to bin, kill data
+    shutil.move(kmz_name, os.path.join(options['output'], kmz_name))
+    os.chdir('..')
+    
     # delete if not kept
     if not options['keep']:
-        for root, dirs, files in os.walk('../data', topdown=False):
+        for root, dirs, files in os.walk('./temp', topdown=False):
             for f in files:
                 os.remove(os.path.join(root, f))
             for d in dirs:
                 os.rmdir(os.path.join(root, d))
           
-            os.rmdir('../data')
+            os.rmdir('./temp')
     print('done')
     
 else:
