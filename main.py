@@ -39,11 +39,8 @@ modes.add_argument('-p', '--protocol', help='discrete mode, specify protocol', c
 modes.add_argument('-d', '--difference', 
                     help='difference mode, specify protocol', choices=protocols)
 
-parser.add_argument('-o', '--output', help='output directory of your KMZ file (absolute path)', default = '.')
+parser.add_argument('-o', '--output', help='output directory of your KMZ file (absolute path)', default = '..')
 parser.add_argument('-k', '--keep', help='keep temporary data. will be overwritten on next run', action='store_true')
-
-# output dir
-# parser.add_argument('-o', '--output', help)
 
 ####
 # SETUP
@@ -108,7 +105,7 @@ if rank == 0:
             for d in dirs:
                 os.rmdir(os.path.join(root, d))
                 
-            os.rmdir('./temp')
+        os.rmdir('./temp')
     except:
         print('HINT: nothing to purge, moving on')
           
@@ -267,7 +264,7 @@ if rank == 0:
     kmz.close()
     
     # move the file to root and back to bin, kill data
-    shutil.move(kmz_name, os.path.join(options['output'], kmz_name))
+    shutil.move(os.path.join('.', kmz_name), os.path.join(options['output'], kmz_name))
     os.chdir('..')
     
     # delete if not kept
@@ -278,7 +275,7 @@ if rank == 0:
             for d in dirs:
                 os.rmdir(os.path.join(root, d))
           
-            os.rmdir('./temp')
+        os.rmdir('./temp')
     print('done')
     
 else:

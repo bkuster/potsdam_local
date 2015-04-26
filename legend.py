@@ -12,7 +12,6 @@ import colorsys
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 
-import time
 
 ####
 # the_legend
@@ -169,6 +168,6 @@ class the_legend():
     # save
     # save the plot to disc
     def save_plot(self):
-        plt.savefig('../data/files/color_ramp.png', format='png', transparent=True)
+        plt.savefig('./temp/files/color_ramp.png', format='png', transparent=True)
         plt.close()
         
